@@ -48,7 +48,7 @@ func (g *MetricGroup) AddMetric(tags map[string]string, value float64, timeNow i
 }
 func (g *MetricGroup) Output() {
 	var output string
-	metricName := strings.Replace(g.Name, ".", "_", -1)
+	metricName := strings.ReplaceAll(g.Name, ".", "_")
 	fmt.Printf("# HELP %s [%s] %s\n", metricName, g.Type, g.Comment)
 	fmt.Printf("# TYPE %s %s\n", metricName, g.Type)
 	for _, m := range g.Metrics {
@@ -230,12 +230,11 @@ func checkArgs(event *types.Event) (int, error) {
 		return sensu.CheckStateCritical, fmt.Errorf("--warning value can not be greater than or equal to --critical value")
 	}
 	for _, tagString := range plugin.ExtraTags {
-		fmt.Println(tagString)
 		parts := strings.Split(tagString, `=`)
 		if len(parts) == 2 {
 			extraTags[parts[0]] = parts[1]
 		} else {
-			return sensu.CheckStateCritical, fmt.Errorf("Failed to parse input tag: %s", tagString)
+			return sensu.CheckStateCritical, fmt.Errorf("failed to parse input tag: %s", tagString)
 		}
 	}
 	return sensu.CheckStateOK, nil
@@ -250,7 +249,7 @@ func executeCheck(event *types.Event) (int, error) {
 	timeNow := time.Now().UnixNano() / 1000000
 	parts, err := disk.Partitions(plugin.IncludePseudo)
 	if err != nil {
-		return sensu.CheckStateCritical, fmt.Errorf("Failed to get partitions, error: %v", err)
+		return sensu.CheckStateCritical, fmt.Errorf("failed to get partitions, error: %v", err)
 	}
 
 	metricGroups := map[string]*MetricGroup{
@@ -329,10 +328,10 @@ func executeCheck(event *types.Event) (int, error) {
 		s, err := disk.Usage(device)
 		if err != nil {
 			if plugin.FailOnError {
-				return sensu.CheckStateCritical, fmt.Errorf("Failed to get disk usage for %s, error: %v", device, err)
+				return sensu.CheckStateCritical, fmt.Errorf("failed to get disk usage for %s, error: %v", device, err)
 			}
 			if !plugin.MetricsMode {
-				fmt.Printf("%s  UNKNOWN: %s - error: %v\n", plugin.PluginConfig.Name, device, err)
+				fmt.Printf("%s  UNKNOWN: %s - error: %v\n", plugin.Name, device, err)
 			}
 			continue
 		}
@@ -364,7 +363,7 @@ func executeCheck(event *types.Event) (int, error) {
 		metricGroups["disk.critical"].AddMetric(tags, float64(crit), timeNow)
 		metricGroups["disk.warning"].AddMetric(tags, float64(warn), timeNow)
 		if !plugin.MetricsMode {
-			fmt.Printf("%s ", plugin.PluginConfig.Name)
+			fmt.Printf("%s ", plugin.Name)
 			if crit > 0 {
 				fmt.Printf("CRITICAL: ")
 			} else if warn > 0 {
