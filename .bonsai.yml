@@ -50,10 +50,12 @@
     -  "entity.system.os == 'windows'"
     -  "entity.system.arch == 'amd64'"
   
-  - platform: "Solaris"
+  - platform: "SmartOS"
     arch: "amd64"
-    asset_filename: "#{repo}_#{version}_solaris_amd64.tar.gz"
+    asset_filename: "#{repo}_#{version}_illumos_amd64.tar.gz"
     sha_filename: "#{repo}_#{version}_sha512-checksums.txt"
     filter:
-    -  "entity.system.os == 'solaris'"
+    -  "entity.system.os == 'illumos'"
     -  "entity.system.arch == 'amd64'"
+  
+

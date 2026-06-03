@@ -5,6 +5,14 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic
 Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.8.6] - 2026-06-03
+
+### Added
+- Added illumos/SmartOS (illumos_amd64) asset build target
+
+### Removed
+- Removed Solaris (solaris_amd64) asset build target as it no longer works on illumos/SmartOS
+
 ## Unreleased
 ### Fixed
 - corrected armv7 asset build filter in .bonsai.yml. Thanks @DJM0.
