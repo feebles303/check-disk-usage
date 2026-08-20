@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,20 +17,21 @@ import (
 // Config represents the check plugin config.
 type Config struct {
 	sensu.PluginConfig
-	IncludeFSType   []string
-	ExcludeFSType   []string
-	IncludeFSPath   []string
-	ExcludeFSPath   []string
-	Warning         float64
-	Critical        float64
-	InodesCritical  float64
-	InodesWarning   float64
-	IncludePseudo   bool
-	IncludeReadOnly bool
-	FailOnError     bool
-	HumanReadable   bool
-	MetricsMode     bool
-	ExtraTags       []string
+	IncludeFSType          []string
+	ExcludeFSType          []string
+	IncludeFSPath          []string
+	ExcludeFSPath          []string
+	Warning                float64
+	Critical               float64
+	InodesCritical         float64
+	InodesWarning          float64
+	IncludePseudo          bool
+	IncludeReadOnly        bool
+	FailOnError            bool
+	HumanReadable          bool
+	MetricsMode            bool
+	ExtraTags              []string
+	DisableZFSPoolCapacity bool
 }
 
 type MetricGroup struct {
@@ -211,6 +213,16 @@ var (
 			Usage:    "Comma separated list of additional metrics tags using key=value format.",
 			Value:    &plugin.ExtraTags,
 		},
+		{
+			Path:     "disable-zfs-pool-capacity",
+			Env:      "",
+			Argument: "disable-zfs-pool-capacity",
+			Default:  false,
+			Usage: "Report raw statvfs usage for zfs mountpoints instead of the underlying " +
+				"zpool's real capacity (default false). ZFS compression and dedup make the " +
+				"statvfs view misleading, so pool capacity is used by default for fstype=zfs.",
+			Value: &plugin.DisableZFSPoolCapacity,
+		},
 	}
 )
 
@@ -334,6 +346,25 @@ func executeCheck(event *types.Event) (int, error) {
 				fmt.Printf("%s  UNKNOWN: %s - error: %v\n", plugin.Name, device, err)
 			}
 			continue
+		}
+
+		// ZFS compression/dedup make statvfs()-based usage (s.Total/Used/Free/
+		// UsedPercent above) misleading: a dataset's "used" bytes are charged
+		// at their compressed size but with no credit for pool-wide dedup
+		// savings, and "size" floats with sibling datasets' usage since they
+		// all share the same pool. Use the pool's real physical capacity
+		// instead, unless explicitly disabled.
+		if p.Fstype == "zfs" && !plugin.DisableZFSPoolCapacity {
+			if pool, zerr := zfsPoolUsage(p.Device); zerr == nil {
+				s.Total = pool.Total
+				s.Used = pool.Used
+				s.Free = pool.Free
+				s.UsedPercent = pool.UsedPercent
+			} else if plugin.FailOnError {
+				return sensu.CheckStateCritical, fmt.Errorf("failed to get zpool capacity for %s, error: %v", device, zerr)
+			} else if !plugin.MetricsMode {
+				fmt.Printf("%s  UNKNOWN: %s - falling back to statvfs usage, error: %v\n", plugin.Name, device, zerr)
+			}
 		}
 
 		// Ignore empty file systems
@@ -472,6 +503,61 @@ func isReadOnly(mountOpts string) bool {
 		return true
 	}
 	return false
+}
+
+// zfsPoolStats holds the real, physical capacity of a zpool as reported by
+// `zpool list`. Unlike statvfs()-based usage, this is unaffected by
+// per-dataset compression/dedup accounting quirks.
+type zfsPoolStats struct {
+	Total       uint64
+	Used        uint64
+	Free        uint64
+	UsedPercent float64
+}
+
+var zfsPoolCache = map[string]zfsPoolStats{}
+
+// zfsPoolUsage returns the physical capacity of the zpool backing a ZFS
+// dataset. device is the mount's device field, which for ZFS is the
+// dataset name (e.g. "mnt/tonkatest"); the pool is always the first
+// component of that name. Results are cached per pool since multiple
+// datasets/mountpoints commonly share one pool.
+func zfsPoolUsage(device string) (zfsPoolStats, error) {
+	pool := strings.SplitN(device, "/", 2)[0]
+	if cached, ok := zfsPoolCache[pool]; ok {
+		return cached, nil
+	}
+
+	out, err := exec.Command("zpool", "list", "-Hp", "-o", "size,alloc,free,cap", pool).Output()
+	if err != nil {
+		return zfsPoolStats{}, fmt.Errorf("zpool list failed for pool %q: %v", pool, err)
+	}
+
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) != 4 {
+		return zfsPoolStats{}, fmt.Errorf("unexpected `zpool list` output for pool %q: %q", pool, out)
+	}
+
+	total, err := strconv.ParseUint(fields[0], 10, 64)
+	if err != nil {
+		return zfsPoolStats{}, fmt.Errorf("failed to parse zpool size for %q: %v", pool, err)
+	}
+	alloc, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return zfsPoolStats{}, fmt.Errorf("failed to parse zpool alloc for %q: %v", pool, err)
+	}
+	free, err := strconv.ParseUint(fields[2], 10, 64)
+	if err != nil {
+		return zfsPoolStats{}, fmt.Errorf("failed to parse zpool free for %q: %v", pool, err)
+	}
+	capacity, err := strconv.ParseFloat(fields[3], 64)
+	if err != nil {
+		return zfsPoolStats{}, fmt.Errorf("failed to parse zpool cap for %q: %v", pool, err)
+	}
+
+	stats := zfsPoolStats{Total: total, Used: alloc, Free: free, UsedPercent: capacity}
+	zfsPoolCache[pool] = stats
+	return stats, nil
 }
 
 func contains(a []string, s string) bool {
