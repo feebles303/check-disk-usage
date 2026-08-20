@@ -9,6 +9,7 @@
 - [Usage](#usage)
   - [Help output](#help-output)
   - [Usage notes](#usage-notes)
+  - [ZFS behavior](#zfs-behavior)
 - [Configuration](#configuration)
   - [Asset registration](#asset-registration)
   - [Check definition](#check-definition)
@@ -49,6 +50,8 @@ Flags:
   -r, --include-read-only         Include read-only filesystems (default false)
   -K, --inodescritical float      Critical threshold for filesystem inode usage (default 85)
   -W, --inodeswarning float       Warning threshold for filesystem inode usage (default 85)
+      --disable-zfs-pool-capacity Report raw statvfs usage for zfs mountpoints instead of the
+                                   underlying zpool's real capacity (default false)
       --metrics                   Output metrics instead of human readable output
       --tags strings              Comma separated list of additional metrics tags using key=value format.
   -w, --warning float             Warning threshold for file system usage (default 85)
@@ -84,6 +87,43 @@ continue to check the remaining file systems as expected.
 * The `--human-readable` (False by default) option determines if you prefer
 to display sizes of different drives in a human format. (Like df Unix/linux
 command.)
+
+### ZFS behavior
+
+ZFS compression and pool-wide dedup make statvfs-based usage (what every
+other file system type reports, and what this check used to report for zfs
+too) misleading:
+
+* A dataset's "used" bytes are charged at their *compressed* size, with no
+credit for dedup savings shared with sibling datasets in the same pool. Two
+datasets on a heavily-deduped pool can report wildly different usage even
+though physically they're consuming a similar, small footprint.
+* A dataset's reported "size" (`used + available`) floats up and down as
+*sibling* datasets on the same pool grow or shrink, even if the dataset
+being checked hasn't changed at all.
+
+Because of this, for any mountpoint with `fstype` of `zfs`, this check
+sources `used`/`free`/`total`/usage percent from the underlying zpool's real
+capacity (`zpool list`) instead of statvfs. This means:
+
+* All datasets that share a pool (e.g. `/`, `/var/lib/docker`, and a
+data volume all carved out of the same pool) will report the *same*
+usage percent and byte counts — because physically, they are the same
+disk. This is intentional and correct for alerting on "will this pool
+run out of space," even though it looks unusual compared to traditional
+per-mountpoint filesystems.
+* This requires the `zpool` binary to be available on `PATH` for the user
+running the check. If `zpool list` fails (e.g. missing binary, permission
+denied) the check falls back to statvfs numbers for that mountpoint and
+reports `UNKNOWN` for it, unless `--fail-on-error` is set.
+* Pass `--disable-zfs-pool-capacity` to opt back into the old, misleading
+statvfs-based numbers for zfs mountpoints, e.g. for side-by-side comparison.
+* In `--metrics` mode, an additional `disk.dataset_used_bytes` metric is
+emitted for zfs mountpoints only, containing the original per-dataset
+statvfs `used` value. Since `disk.used_bytes`/`disk.percent_usage` become
+identical across sibling datasets on the same pool, use
+`disk.dataset_used_bytes` to see which specific dataset is actually
+responsible for growth (e.g. in a dashboard trend panel).
 
 ## Configuration
 
@@ -122,6 +162,34 @@ spec:
   runtime_assets:
   - sensu/check-disk-usage
 ```
+
+#### Linux with ZFS example
+
+```yml
+---
+type: CheckConfig
+api_version: core/v2
+metadata:
+  name: check-disk-usage
+  namespace: default
+spec:
+  command: >-
+    check-disk-usage
+    --include-fs-type "xfs,ext4,zfs"
+    --exclude-fs-path "/boot"
+    --warning 90
+    --critical 95
+    --metrics
+  subscriptions:
+  - system
+  runtime_assets:
+  - feebles303/check-disk-usage
+```
+
+Note `zfs` must be added to `--include-fs-type` (or omitted from
+`--exclude-fs-type`) explicitly — it isn't special-cased into inclusion by
+default. See [ZFS behavior](#zfs-behavior) above for what changes once it's
+included.
 
 #### Windows example
 ```yml
