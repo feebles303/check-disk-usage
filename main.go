@@ -313,6 +313,15 @@ func executeCheck(event *types.Event) (int, error) {
 			Comment: "Free size in bytes of mounted volumes",
 			Metrics: []Metric{},
 		},
+		"disk.dataset_used_bytes": &MetricGroup{
+			Name: "disk.dataset_used_bytes",
+			Type: "GAUGE",
+			Comment: "For zfs mountpoints, space this specific dataset is charged with " +
+				"(compressed, not pool-capacity-corrected). Sibling datasets on the same " +
+				"pool all report the same disk.used_bytes, so use this metric to see which " +
+				"dataset is actually growing. Not emitted for non-zfs mountpoints.",
+			Metrics: []Metric{},
+		},
 	}
 
 	for _, p := range parts {
@@ -356,6 +365,12 @@ func executeCheck(event *types.Event) (int, error) {
 		// instead, unless explicitly disabled.
 		if p.Fstype == "zfs" && !plugin.DisableZFSPoolCapacity {
 			if pool, zerr := zfsPoolUsage(p.Device); zerr == nil {
+				// s.Used here is still the pre-override, dataset-level statvfs
+				// value (ZFS reports this as the dataset's own compressed
+				// "used" property) -- keep it as a separate metric so trend
+				// graphs can still tell datasets on the same pool apart.
+				metricGroups["disk.dataset_used_bytes"].AddMetric(tags, float64(s.Used), timeNow)
+
 				s.Total = pool.Total
 				s.Used = pool.Used
 				s.Free = pool.Free
@@ -448,6 +463,7 @@ func executeCheck(event *types.Event) (int, error) {
 		metricGroups["disk.free_bytes"].Output()
 		metricGroups["disk.used_inodes"].Output()
 		metricGroups["disk.free_inodes"].Output()
+		metricGroups["disk.dataset_used_bytes"].Output()
 
 	}
 	if criticals > 0 {
